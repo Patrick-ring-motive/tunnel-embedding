@@ -58,9 +58,9 @@ jobs:
             exit 1
           fi
 
-          # Serve only a generated demo, never the checkout or runner files.
+          # Serve only the static test page, never the checkout or runner files.
           site_dir="$(mktemp -d "$RUNNER_TEMP/quick-tunnel-site.XXXXXX")"
-          printf '%s\n' '<!doctype html><html lang="en"><meta charset="utf-8"><title>Quick Tunnel</title><h1>Python server is online</h1><p>Served from GitHub Actions through a Cloudflare Quick Tunnel.</p></html>' > "$site_dir/index.html"
+          cp "$GITHUB_WORKSPACE/server/index.html" "$site_dir/index.html"
           server_pid=""
           tunnel_pid=""
           log_pid=""
