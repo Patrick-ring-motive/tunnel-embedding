@@ -46,7 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TUNNEL_VARIABLE_TOKEN }}
           REGISTRATION_TOKEN: ${{ secrets.REGISTRATION_TOKEN }}
-          PROXY_URL: https://quick-tunnel-proxy.open-webui-cloudflare.workers.dev
+          PROXY_URL: https://tunnel-embedding.open-webui-cloudflare.workers.dev
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN:-}" ]]; then
