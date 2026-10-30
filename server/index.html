@@ -1,174 +1,126 @@
-import asyncio
-import json
-import re
-import signal
-import sys
-import threading
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embedding model test</title>
+  <style>
+    body { margin: 0 auto; padding: 2rem 1rem; max-width: 56rem; font: 16px/1.5 system-ui, sans-serif; color: #182536; background: #f5f7fa; }
+    h1 { margin-top: 0; }
+    code { overflow-wrap: anywhere; }
+    label { display: block; font-weight: 600; }
+    textarea { box-sizing: border-box; width: 100%; padding: .75rem; font: inherit; }
+    button, a { font: inherit; }
+    button { margin-top: .75rem; padding: .6rem 1rem; cursor: pointer; }
+    button:disabled { cursor: wait; }
+    pre { padding: 1rem; background: #fff; border: 1px solid #b4c0ce; max-height: 28rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Embedding model test</h1>
+    <p>Model: <code>ibm-granite/granite-embedding-small-english-r2</code></p>
+    <p>Enter English text to generate one embedding. First request may take longer while the model downloads and loads. This public demo has no authentication; do not submit sensitive text.</p>
+    <form id="form">
+      <label for="input">Text to embed</label>
+      <textarea id="input" rows="6" required placeholder="The quick brown fox jumps over the lazy dog."></textarea>
+      <button id="submit" type="submit">Generate embedding</button>
+    </form>
+    <p id="status" role="status" aria-live="polite">Ready for input.</p>
+    <p id="recovery" hidden><a href="/status?returnTo=%2F" target="_blank" rel="noopener">Open tunnel startup status</a> in a new tab, then return here and submit again. Your text stays on this page; requests are not retried automatically.</p>
+    <section id="result" hidden aria-label="Embedding result">
+      <h2>Result</h2>
+      <p>Dimensions: <span id="dimensions"></span></p>
+      <p>Prompt tokens: <span id="prompt-tokens"></span> · Total tokens: <span id="total-tokens"></span></p>
+      <h3>Embedding</h3>
+      <pre id="embedding"></pre>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const button = document.getElementById('submit');
+    const status = document.getElementById('status');
+    const recovery = document.getElementById('recovery');
+    const result = document.getElementById('result');
+    const dimensions = document.getElementById('dimensions');
+    const promptTokens = document.getElementById('prompt-tokens');
+    const totalTokens = document.getElementById('total-tokens');
+    const embedding = document.getElementById('embedding');
+    const tokenCount = (value) => Number.isSafeInteger(value) && value >= 0 ? String(value) : 'Not reported';
 
-MODEL_NAME = "ibm-granite/granite-embedding-small-english-r2"
-MAX_BODY_BYTES = 1024 * 1024
-MAX_INPUTS = 256
-
-_model = None
-_model_lock = threading.Lock()
-
-
-def get_model():
-    """Load the embedding model once, on first use."""
-    global _model
-    with _model_lock:
-        if _model is None:
-            from sentence_transformers import SentenceTransformer
-
-            _model = SentenceTransformer(MODEL_NAME)
-        return _model
-
-
-def embed(texts):
-    model = get_model()
-    vectors = model.encode(texts, normalize_embeddings=True)
-    tokens = sum(len(ids) for ids in model.tokenizer(texts)["input_ids"])
-    return vectors.tolist(), tokens
-
-
-class TunnelHandler(SimpleHTTPRequestHandler):
-    def do_GET(self):
-        asyncio.run(self.do_ASYNC())
-
-    def do_HEAD(self):
-        asyncio.run(self.do_ASYNC())
-
-    def do_POST(self):
-        asyncio.run(self.do_ASYNC())
-
-    async def do_ASYNC(self):
-        """Run supported requests in a per-request event loop."""
-        if self.command == "POST" and self.path.split("?", 1)[0] == "/v1/embeddings":
-            await self.handle_embeddings()
-            return
-        if self.command == "POST":
-            if self.headers.get_all("X-Tunnel-Original-Method") != ["GET"]:
-                await asyncio.to_thread(self.send_error, 501, "Unsupported method ('POST')")
-                return
-            lengths = self.headers.get_all("Content-Length", [])
-            if ("Transfer-Encoding" in self.headers
-                    or len(lengths) > 1
-                    or (lengths and re.fullmatch(r"0+", lengths[0]) is None)):
-                # Do not drain an untrusted body or reuse its connection.
-                self.close_connection = True
-                await asyncio.to_thread(self.send_error, 400, "Translated GET requires an empty body")
-                return
-            del self.headers["X-Tunnel-Original-Method"]
-            self.command = "GET"
-            # BaseHTTPRequestHandler logs requestline, not command.
-            self.requestline = f"GET {self.path} {self.request_version}"
-        if self.command == "GET":
-            # Await the extension hook directly; do_GET would nest asyncio.run.
-            await self.handle_GET()
-        elif self.command == "HEAD":
-            await asyncio.to_thread(super().do_HEAD)
-
-    def send_json(self, status, payload):
-        body = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def json_error(self, status, message):
-        self.close_connection = True
-        self.send_json(status, {"error": {"message": message, "type": "invalid_request_error"}})
-
-    async def handle_embeddings(self):
-        """OpenAI-compatible POST /v1/embeddings."""
-        if "Transfer-Encoding" in self.headers:
-            await asyncio.to_thread(self.json_error, 400, "Content-Length body required")
-            return
-        try:
-            length = int(self.headers.get("Content-Length", ""))
-        except ValueError:
-            length = -1
-        if length < 0 or length > MAX_BODY_BYTES:
-            await asyncio.to_thread(self.json_error, 413 if length > 0 else 400, "Invalid or oversized body")
-            return
-        raw = await asyncio.to_thread(self.rfile.read, length)
-        try:
-            inputs = json.loads(raw)["input"]
-        except (ValueError, TypeError, KeyError):
-            await asyncio.to_thread(self.json_error, 400, "Body must be JSON with an 'input' field")
-            return
-        if isinstance(inputs, str):
-            inputs = [inputs]
-        if (not isinstance(inputs, list) or not inputs or len(inputs) > MAX_INPUTS
-                or not all(isinstance(t, str) for t in inputs)):
-            await asyncio.to_thread(
-                self.json_error, 400, f"'input' must be a string or a list of 1-{MAX_INPUTS} strings")
-            return
-        try:
-            vectors, tokens = await asyncio.to_thread(embed, inputs)
-        except Exception as exc:
-            self.log_error("embedding failed: %r", exc)
-            await asyncio.to_thread(self.json_error, 500, "Embedding failed")
-            return
-        await asyncio.to_thread(self.send_json, 200, {
-            "object": "list",
-            "model": MODEL_NAME,
-            "data": [{"object": "embedding", "index": i, "embedding": v}
-                     for i, v in enumerate(vectors)],
-            "usage": {"prompt_tokens": tokens, "total_tokens": tokens},
-        })
-
-    async def handle_GET(self):
-        """Async extension hook shared by direct and restored GET requests."""
-        # Keep stdlib path handling and bounded streaming copy, off the loop.
-        await asyncio.to_thread(super().do_GET)
-
-
-async def main():
-    handler = partial(TunnelHandler, directory=sys.argv[1])
-    loop = asyncio.get_running_loop()
-    task = asyncio.current_task()
-    assert task is not None
-    previous_handlers = {
-        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
-    }
-    with ThreadingHTTPServer(("127.0.0.1", 8000), handler) as server:
-        try:
-            for sig in previous_handlers:
-                loop.add_signal_handler(sig, task.cancel)
-            serving = asyncio.create_task(asyncio.to_thread(server.serve_forever))
-            try:
-                # Shield also preserves queued startup: shutdown must not wait
-                # for a serve_forever call that cancellation prevented running.
-                await asyncio.shield(serving)
-            finally:
-                async def stop():
-                    # shutdown must run in a different thread from serve_forever.
-                    await asyncio.to_thread(server.shutdown)
-                    await serving
-
-                stopping = asyncio.create_task(stop())
-                cancelled = False
-                while not stopping.done():
-                    try:
-                        await asyncio.shield(stopping)
-                    except asyncio.CancelledError:
-                        # Repeated signals must not interrupt executor cleanup.
-                        cancelled = True
-                stopping.result()
-                if cancelled:
-                    raise asyncio.CancelledError
-        finally:
-            for sig, previous in previous_handlers.items():
-                loop.remove_signal_handler(sig)
-                signal.signal(sig, previous)
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (button.disabled) return;
+      result.hidden = true;
+      recovery.hidden = true;
+      embedding.textContent = '';
+      dimensions.textContent = '';
+      promptTokens.textContent = '';
+      totalTokens.textContent = '';
+      if (!input.value.trim()) {
+        status.textContent = 'Enter some text first.';
+        input.focus();
+        return;
+      }
+      button.disabled = true;
+      form.setAttribute('aria-busy', 'true');
+      status.textContent = 'Generating embedding… First use may download and load the model.';
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 180000);
+      try {
+        const response = await fetch('/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ model: 'ibm-granite/granite-embedding-small-english-r2', input: input.value }),
+          cache: 'no-store',
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        let data;
+        try { data = await response.json(); }
+        catch {
+          if (controller.signal.aborted) throw new Error('Request timed out. The model may still be loading; try again.');
+          throw new Error(`Server returned a non-JSON response (HTTP ${response.status}). Try again or check tunnel startup status.`);
+        }
+        if (!response.ok || data?.error) {
+          const message = typeof data?.error === 'string' ? data.error : data?.error?.message;
+          throw new Error(`HTTP ${response.status}: ${typeof message === 'string' ? message : 'Embedding request failed.'}`);
+        }
+        // Worker recovery responses are startup acknowledgements, not embeddings.
+        // Never replay the original POST automatically after a tunnel failure.
+        if (['start', 'loading', 'ready', 'idle'].includes(data?.status)) {
+          status.textContent = {
+            start: 'Tunnel startup requested. No embedding was returned.',
+            loading: 'Tunnel is starting. No embedding was returned.',
+            ready: 'Tunnel is ready. Submit again to generate an embedding.',
+            idle: 'Tunnel is stopped. Open startup status to start it again.',
+          }[data.status];
+          recovery.hidden = false;
+          return;
+        }
+        const vector = data?.data?.[0]?.embedding;
+        if (!Array.isArray(vector) || !vector.length || !vector.every(Number.isFinite)) {
+          throw new Error('Server returned an invalid embedding response.');
+        }
+        dimensions.textContent = String(vector.length);
+        promptTokens.textContent = tokenCount(data.usage?.prompt_tokens);
+        totalTokens.textContent = tokenCount(data.usage?.total_tokens);
+        embedding.textContent = JSON.stringify(vector, null, 2);
+        result.hidden = false;
+        status.textContent = 'Embedding generated.';
+      } catch (error) {
+        status.textContent = controller.signal.aborted
+          ? 'Request timed out. The model may still be loading; try again.'
+          : `Error: ${error.message || 'Request failed. Check your connection and try again.'}`;
+        recovery.hidden = false;
+      } finally {
+        clearTimeout(timer);
+        button.disabled = false;
+        form.setAttribute('aria-busy', 'false');
+      }
+    });
+  </script>
+</body>
+</html>
