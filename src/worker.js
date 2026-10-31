@@ -1,5 +1,10 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { DurableObject } from "cloudflare:workers";
+import {
+  createHash,
+  timingSafeEqual
+} from "node:crypto";
+import {
+  DurableObject
+} from "cloudflare:workers";
 
 const REGISTER_PATH = "/__tunnel";
 const CACHE_NAME = "tunnel-registration-v2";
@@ -17,7 +22,10 @@ let revision = 0;
 function json(body, status = 200, headers = {}) {
   return Response.json(body, {
     status,
-    headers: { "Cache-Control": "no-store", ...headers },
+    headers: {
+      "Cache-Control": "no-store",
+      ...headers
+    },
   });
 }
 
@@ -37,7 +45,10 @@ async function readRegistration(request) {
   let length = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const {
+        done,
+        value
+      } = await reader.read();
       if (done) break;
       if (length + value.byteLength > bytes.length) {
         await reader.cancel();
@@ -75,7 +86,9 @@ class RegistrationError extends Error {
 function registrationError(error) {
   return json({
     error: error instanceof RegistrationError ? error.message : "Could not access tunnel registration",
-    ...(error.upstreamStatus ? { upstreamStatus: error.upstreamStatus } : {}),
+    ...(error.upstreamStatus ? {
+      upstreamStatus: error.upstreamStatus
+    } : {}),
   }, error instanceof RegistrationError ? error.status : 502);
 }
 
@@ -86,8 +99,15 @@ async function variableRequest(env, method, body) {
   const base = `https://api.github.com/repos/${encodeURIComponent(env.GITHUB_OWNER)}/${encodeURIComponent(env.GITHUB_REPO)}/actions/variables`;
   return fetch(method === "POST" ? base : `${base}/${REPO_VARIABLE}`, {
     method,
-    headers: { ...githubHeaders(env), ...(body ? { "Content-Type": "application/json" } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    headers: {
+      ...githubHeaders(env),
+      ...(body ? {
+        "Content-Type": "application/json"
+      } : {})
+    },
+    ...(body ? {
+      body: JSON.stringify(body)
+    } : {}),
     redirect: "manual",
     cache: "no-store",
     signal: AbortSignal.timeout(10_000),
@@ -95,8 +115,8 @@ async function variableRequest(env, method, body) {
 }
 
 function validRecord(record) {
-  return record && typeof record.host === "string" && HOST_PATTERN.test(record.host)
-    && Number.isFinite(record.expiresAt);
+  return record && typeof record.host === "string" && HOST_PATTERN.test(record.host) &&
+    Number.isFinite(record.expiresAt);
 }
 
 async function readRepository(env) {
@@ -116,7 +136,10 @@ async function readRepository(env) {
 }
 
 async function writeRepository(env, record) {
-  const body = { name: REPO_VARIABLE, value: JSON.stringify(record) };
+  const body = {
+    name: REPO_VARIABLE,
+    value: JSON.stringify(record)
+  };
   let response = await variableRequest(env, "PATCH", body);
   if (response.status === 404) {
     await response.body?.cancel();
@@ -137,7 +160,9 @@ async function cacheRecord(key, record) {
   try {
     const cache = await caches.open(CACHE_NAME);
     await cache.put(key, Response.json(record, {
-      headers: { "Cache-Control": `public, max-age=${seconds}` },
+      headers: {
+        "Cache-Control": `public, max-age=${seconds}`
+      },
     }));
   } catch {
     // Cache is an optimization; GitHub remains the source of truth.
@@ -199,7 +224,11 @@ async function tunnelReachable(tunnel) {
 async function tunnelStatus(request, env, key, allowDispatch) {
   const methods = allowDispatch ? ["POST"] : ["GET", "POST"];
   if (!methods.includes(request.method)) {
-    return json({ error: `Use ${methods.join(" or ")} for this endpoint` }, 405, { Allow: methods.join(", ") });
+    return json({
+      error: `Use ${methods.join(" or ")} for this endpoint`
+    }, 405, {
+      Allow: methods.join(", ")
+    });
   }
   // Startup and monitoring are public. Only /__tunnel requires authentication.
   let tunnel;
@@ -208,13 +237,19 @@ async function tunnelStatus(request, env, key, allowDispatch) {
   } catch (error) {
     return registrationError(error);
   }
-  if (await tunnelReachable(tunnel)) return json({ status: "ready" });
+  if (await tunnelReachable(tunnel)) return json({
+    status: "ready"
+  });
 
   if (!env.GITHUB_TOKEN || !env.GITHUB_OWNER || !env.GITHUB_REPO || !env.GITHUB_REF) {
-    return json({ error: "Configure GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO and GITHUB_REF" }, 503);
+    return json({
+      error: "Configure GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO and GITHUB_REF"
+    }, 503);
   }
   if (!env.WORKFLOW_COORDINATOR) {
-    return json({ error: "Configure WORKFLOW_COORDINATOR Durable Object binding" }, 503);
+    return json({
+      error: "Configure WORKFLOW_COORDINATOR Durable Object binding"
+    }, 503);
   }
   // All origins, isolates and refs share the same repository/workflow coordinator.
   const scope = JSON.stringify([
@@ -225,7 +260,9 @@ async function tunnelStatus(request, env, key, allowDispatch) {
     return await env.WORKFLOW_COORDINATOR.getByName(scope).check(allowDispatch);
   } catch {
     // Never expose RPC diagnostics, credentials or raw upstream errors.
-    return json({ error: "Workflow coordinator unavailable" }, 502);
+    return json({
+      error: "Workflow coordinator unavailable"
+    }, 502);
   }
 }
 
@@ -247,15 +284,24 @@ async function lookupWorkflow(env) {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      return json({ error: "GitHub workflow lookup failed", upstreamStatus: response.status }, 502);
+      return json({
+        error: "GitHub workflow lookup failed",
+        upstreamStatus: response.status
+      }, 502);
     }
     const data = await response.json();
     if (!Array.isArray(data.workflow_runs) || !Number.isInteger(data.total_count)) {
-      return json({ error: "Invalid GitHub workflow response" }, 502);
+      return json({
+        error: "Invalid GitHub workflow response"
+      }, 502);
     }
-    if (data.total_count > 0) return json({ status: "loading" });
+    if (data.total_count > 0) return json({
+      status: "loading"
+    });
   }
-  return json({ status: "idle" });
+  return json({
+    status: "idle"
+  });
 }
 
 export class WorkflowCoordinator extends DurableObject {
@@ -281,7 +327,9 @@ export class WorkflowCoordinator extends DurableObject {
   async check(allowDispatch) {
     // Synchronous read + reservation cannot interleave. Storage output gates make
     // the lease durable before external I/O. Never hold an input gate over fetch.
-    if (this.#guard()?.until_ms > Date.now()) return json({ status: "loading" });
+    if (this.#guard()?.until_ms > Date.now()) return json({
+      status: "loading"
+    });
     const owner = crypto.randomUUID();
     if (allowDispatch) this.#reserve(owner, LOOKUP_LEASE_MS);
     let attempted = false;
@@ -291,17 +339,26 @@ export class WorkflowCoordinator extends DurableObject {
       if (!lookup.ok || result.status !== "idle") return lookup;
       if (!allowDispatch) {
         // A dispatch may have started while this read-only lookup was in flight.
-        return this.#guard()?.until_ms > Date.now() ? json({ status: "loading" }) : lookup;
+        return this.#guard()?.until_ms > Date.now() ? json({
+          status: "loading"
+        }) : lookup;
       }
       const guard = this.#guard();
       // Fence late lookup completions: an expired/replaced owner cannot dispatch.
-      if (guard?.owner !== owner || guard.until_ms <= Date.now()) return json({ status: "loading" });
+      if (guard?.owner !== owner || guard.until_ms <= Date.now()) return json({
+        status: "loading"
+      });
       this.#reserve(owner, DISPATCH_COOLDOWN_MS);
       attempted = true;
       const response = await fetch(`${workflowBase(this.env)}/dispatches`, {
         method: "POST",
-        headers: { ...githubHeaders(this.env), "Content-Type": "application/json" },
-        body: JSON.stringify({ ref: this.env.GITHUB_REF }),
+        headers: {
+          ...githubHeaders(this.env),
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ref: this.env.GITHUB_REF
+        }),
         redirect: "manual",
         signal: AbortSignal.timeout(10_000),
       });
@@ -311,10 +368,17 @@ export class WorkflowCoordinator extends DurableObject {
         this.#release(owner);
       }
       await response.body?.cancel();
-      if (!response.ok) return json({ error: "GitHub workflow dispatch failed", upstreamStatus: response.status }, 502);
-      return json({ status: "start" });
+      if (!response.ok) return json({
+        error: "GitHub workflow dispatch failed",
+        upstreamStatus: response.status
+      }, 502);
+      return json({
+        status: "start"
+      });
     } catch {
-      return json({ error: "GitHub API unavailable or returned invalid data" }, 502);
+      return json({
+        error: "GitHub API unavailable or returned invalid data"
+      }, 502);
     } finally {
       // Errors before POST are safe to retry. Crashes leave only a bounded lease;
       // ambiguous POST results retain the persisted cooldown without extending it.
@@ -328,7 +392,9 @@ function startTunnel(request, env, key) {
     return statusPage();
   }
   // Never replay the original body, even if startup finds a newer healthy tunnel.
-  return tunnelStatus(new Request(request.url, { method: "POST" }), env, key, true);
+  return tunnelStatus(new Request(request.url, {
+    method: "POST"
+  }), env, key, true);
 }
 
 function gatewayFailure(status) {
@@ -436,89 +502,118 @@ void start();
 
 export default {
   async fetch(request, env) {
-    try{
-    const url = new URL(request.url);
-    const key = new URL(REGISTER_PATH, url.origin).href;
+    try {
+      const url = new URL(request.url);
+      const key = new URL(REGISTER_PATH, url.origin).href;
 
-    if (url.pathname === "/init") return tunnelStatus(request, env, key, true);
-    if (url.pathname === "/status") {
-      if (request.method === "GET" && url.searchParams.get("format") !== "json") return statusPage();
-      return tunnelStatus(request, env, key, false);
-    }
+      if (url.pathname === "/init") return tunnelStatus(request, env, key, true);
+      if (url.pathname === "/status") {
+        if (request.method === "GET" && url.searchParams.get("format") !== "json") return statusPage();
+        return tunnelStatus(request, env, key, false);
+      }
 
-    if (url.pathname === REGISTER_PATH) {
-      if (request.method !== "POST") {
-        return json({ error: "Use POST to register a tunnel" }, 405, { Allow: "POST" });
+      if (url.pathname === REGISTER_PATH) {
+        if (request.method !== "POST") {
+          return json({
+            error: "Use POST to register a tunnel"
+          }, 405, {
+            Allow: "POST"
+          });
+        }
+        if (!env.REGISTRATION_TOKEN) {
+          return json({
+            error: "Registration secret is not configured"
+          }, 503);
+        }
+        if (!authorized(request, env.REGISTRATION_TOKEN)) {
+          return json({
+            error: "Unauthorized"
+          }, 401);
+        }
+        let host;
+        try {
+          host = await readRegistration(request);
+        } catch {
+          return json({
+            error: "Expected JSON {host: '<name>.trycloudflare.com'} (maximum 1024 bytes)"
+          }, 400);
+        }
+        const record = {
+          host,
+          expiresAt: Date.now() + CACHE_SECONDS * 1000
+        };
+        try {
+          await writeRepository(env, record);
+        } catch (error) {
+          return registrationError(error);
+        }
+        revision++;
+        cachedTunnel = {
+          key,
+          record,
+          refreshAt: Date.now() + MEMORY_MS
+        };
+        await cacheRecord(key, record);
+        return json({
+          ...record,
+          scope: "repository",
+          variable: REPO_VARIABLE
+        });
       }
-      if (!env.REGISTRATION_TOKEN) {
-        return json({ error: "Registration secret is not configured" }, 503);
-      }
-      if (!authorized(request, env.REGISTRATION_TOKEN)) {
-        return json({ error: "Unauthorized" }, 401);
-      }
-      let host;
+
+      let tunnel;
       try {
-        host = await readRegistration(request);
-      } catch {
-        return json({ error: "Expected JSON {host: '<name>.trycloudflare.com'} (maximum 1024 bytes)" }, 400);
-      }
-      const record = { host, expiresAt: Date.now() + CACHE_SECONDS * 1000 };
-      try {
-        await writeRepository(env, record);
+        tunnel = await getTunnel(key, env);
       } catch (error) {
         return registrationError(error);
       }
-      revision++;
-      cachedTunnel = { key, record, refreshAt: Date.now() + MEMORY_MS };
-      await cacheRecord(key, record);
-      return json({ ...record, scope: "repository", variable: REPO_VARIABLE });
-    }
+      if (!tunnel) return startTunnel(request, env, key);
 
-    let tunnel;
-    try {
-      tunnel = await getTunnel(key, env);
+      url.protocol = "https:";
+      url.host = tunnel.host;
+      let response;
+      try {
+        // Translate ordinary GET only; WebSocket handshakes require GET.
+        const translateGet = request.method === "GET" &&
+          request.headers.get("Upgrade")?.toLowerCase() !== "websocket";
+        const upstream = new Request(new Request(url, request), {
+          method: translateGet ? "POST" : request.method,
+        });
+        upstream.headers.delete("Host");
+        // Never trust a caller-supplied method marker, including on genuine POST.
+        upstream.headers.delete("X-Tunnel-Original-Method");
+        if (translateGet) upstream.headers.set("X-Tunnel-Original-Method", "GET");
+        // Never follow upstream redirects with the caller's cookies/credentials.
+        response = await fetch(upstream, {
+          redirect: "manual",
+          cache: "no-store"
+        });
+      } catch {
+        // A transport failure alone does not prove the tunnel has stopped.
+      }
+      // Probe only suspected gateway/transport failures. Do not consume application
+      // bodies or replace a valid application error when the HEAD endpoint is healthy.
+      if ((!response || gatewayFailure(response.status)) && !await tunnelReachable(tunnel)) {
+        await response?.body?.cancel();
+        // Recovery is outside the proxy catch. Leave registration/cache state intact:
+        // a concurrent registration may already have replaced this failed tunnel.
+        return startTunnel(request, env, key);
+      }
+      if (!response) return json({
+        error: "Tunnel is unavailable"
+      }, 502);
+      // Preserve WebSocket upgrade objects; ordinary HTTP responses remain streamed.
+      if (response.status === 101) return response;
+      const outgoing = new Response(response.body, response);
+      outgoing.headers.set("Cache-Control", "no-store");
+      outgoing.headers.set("CDN-Cache-Control", "no-store");
+      outgoing.headers.set("Cloudflare-CDN-Cache-Control", "no-store");
+      return outgoing;
     } catch (error) {
-      return registrationError(error);
+      return json({
+        error: "Unexpected error",
+        details: error.message
+      }, 500);
     }
-    if (!tunnel) return startTunnel(request, env, key);
-
-    url.protocol = "https:";
-    url.host = tunnel.host;
-    let response;
-    try {
-      // Translate ordinary GET only; WebSocket handshakes require GET.
-      const translateGet = request.method === "GET"
-        && request.headers.get("Upgrade")?.toLowerCase() !== "websocket";
-      const upstream = new Request(new Request(url, request), {
-        method: translateGet ? "POST" : request.method,
-      });
-      upstream.headers.delete("Host");
-      // Never trust a caller-supplied method marker, including on genuine POST.
-      upstream.headers.delete("X-Tunnel-Original-Method");
-      if (translateGet) upstream.headers.set("X-Tunnel-Original-Method", "GET");
-      // Never follow upstream redirects with the caller's cookies/credentials.
-      response = await fetch(upstream, { redirect: "manual", cache: "no-store" });
-    } catch {
-      // A transport failure alone does not prove the tunnel has stopped.
-    }
-    // Probe only suspected gateway/transport failures. Do not consume application
-    // bodies or replace a valid application error when the HEAD endpoint is healthy.
-    if ((!response || gatewayFailure(response.status)) && !await tunnelReachable(tunnel)) {
-      await response?.body?.cancel();
-      // Recovery is outside the proxy catch. Leave registration/cache state intact:
-      // a concurrent registration may already have replaced this failed tunnel.
-      return startTunnel(request, env, key);
-    }
-    if (!response) return json({ error: "Tunnel is unavailable" }, 502);
-    // Preserve WebSocket upgrade objects; ordinary HTTP responses remain streamed.
-    if (response.status === 101) return response;
-    const outgoing = new Response(response.body, response);
-    outgoing.headers.set("Cache-Control", "no-store");
-    outgoing.headers.set("CDN-Cache-Control", "no-store");
-    outgoing.headers.set("Cloudflare-CDN-Cache-Control", "no-store");
-    return outgoing;
-  }catch (error) {
-    return json({ error: "Unexpected error", details: error.message }, 500);
-  }
   },
 };
